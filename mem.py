@@ -21,14 +21,48 @@
   mem.py mem show|add|rm|clear  # 常驻层 MEMORY.md 管理
   mem.py index                  # 重建索引 + 重新生成 _index.md
   mem.py rollup [YYYY-MM]       # 月度聚合摘要
+  mem.py pending                # 查看自动捕获缓冲(插件每轮用户消息原文)
 """
-import argparse, os, re, shutil, sqlite3, sys, time
+import argparse, os, re, shutil, sqlite3, struct, sys, time
 from datetime import datetime
 from pathlib import Path
 
 MEM_LIMIT = 2200          # MEMORY.md 字符上限(约800 token)
 SEP = "\n§\n"             # MEMORY.md 条目分隔符(同 Hermes)
 TRASH_DIR = ".trash"
+EMBED_MODEL = "BAAI/bge-small-zh-v1.5"   # 中文语义检索模型（384 维）
+VEC_DIM = 512   # bge-small-zh-v1.5 实际维度
+_embedder = None
+
+def embedder():
+    """懒加载本地 embedding 模型。未安装 fastembed 时返回 None（自动退回关键词检索）。"""
+    global _embedder
+    if _embedder is None:
+        try:
+            from fastembed import TextEmbedding
+            _embedder = TextEmbedding(model_name=EMBED_MODEL)
+        except Exception:
+            _embedder = False
+    return _embedder or None
+
+def to_vec(text):
+    """文本 -> 384 维 float32 向量(BLOB)。无模型时返回 None。"""
+    e = embedder()
+    if e is None or not text:
+        return None
+    try:
+        v = next(e.embed([text[:512]]))
+        return struct.pack(f"<{VEC_DIM}f", *[float(x) for x in v])
+    except Exception:
+        return None
+
+def vec_similarity(a: bytes, b: bytes) -> float:
+    va = struct.unpack(f"<{VEC_DIM}f", a)
+    vb = struct.unpack(f"<{VEC_DIM}f", b)
+    dot = sum(x * y for x, y in zip(va, vb))
+    na = sum(x * x for x in va) ** 0.5 or 1e-9
+    nb = sum(y * y for y in vb) ** 0.5 or 1e-9
+    return dot / (na * nb)
 
 def home() -> Path:
     """记忆库根: MEMORY_HOME > $DSH_HOME/memories(全局) > mem.py 所在目录(项目级)"""
@@ -83,6 +117,7 @@ def db(root: Path):
     conn = sqlite3.connect(root / "index.sqlite")
     conn.execute("""CREATE TABLE IF NOT EXISTS mem(
         path TEXT PRIMARY KEY, date TEXT, title TEXT, tags TEXT, summary TEXT, body TEXT)""")
+    conn.execute("CREATE TABLE IF NOT EXISTS mem_vec(path TEXT PRIMARY KEY, vec BLOB NOT NULL)")
     try:
         conn.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(
             path UNINDEXED, date, title, summary, body, tokenize='trigram')""")
@@ -99,11 +134,16 @@ def upsert(conn, path: str, meta: dict, body: str):
     conn.execute("INSERT INTO mem_fts VALUES (?,?,?,?,?)",
                  (path, meta.get("date", ""), meta.get("title", ""),
                   meta.get("summary", ""), body))
+    vec = to_vec(f"{meta.get('title', '')} {meta.get('summary', '')}")
+    conn.execute("DELETE FROM mem_vec WHERE path=?", (path,))
+    if vec:
+        conn.execute("INSERT OR REPLACE INTO mem_vec VALUES (?,?)", (path, vec))
     conn.commit()
 
 def remove_path(conn, path: str):
     conn.execute("DELETE FROM mem WHERE path=?", (path,))
     conn.execute("DELETE FROM mem_fts WHERE path=?", (path,))
+    conn.execute("DELETE FROM mem_vec WHERE path=?", (path,))
     conn.commit()
 
 # ---------- 常驻层 MEMORY.md ----------
@@ -196,18 +236,51 @@ def search_rows(conn, query: str, k: int, phase: str):
     return [dict(zip(("path", "date", "title", "tags", "summary"), r))
             for r in conn.execute(sql, (like, k))]
 
+def vec_search(conn, query: str, k: int):
+    """语义向量召回：query embedding 与全部记忆向量算余弦相似度，Top-K。"""
+    qv = to_vec(query)
+    if qv is None:
+        return []
+    rows = conn.execute(
+        "SELECT mem.path, mem.date, mem.title, mem.tags, mem.summary, mem_vec.vec "
+        "FROM mem JOIN mem_vec USING(path)").fetchall()
+    scored = sorted(((vec_similarity(qv, v), p, d, t, tg, s)
+                     for p, d, t, tg, s, v in rows), reverse=True)
+    out = []
+    for sc, p, d, t, tg, s in scored:
+        if sc < 0.25:
+            break
+        out.append({"path": p, "date": d, "title": t, "tags": tg, "summary": s, "src": f"语义 {sc:.2f}"})
+        if len(out) >= k:
+            break
+    return out
+
+def merge_hits(semantic, keyword, k):
+    """语义结果在前 + 关键词补齐，按 path 去重。"""
+    seen, merged = set(), []
+    for h in list(semantic) + list(keyword):
+        if h["path"] not in seen:
+            seen.add(h["path"])
+            merged.append(h)
+        if len(merged) >= k:
+            break
+    return merged
+
 def cmd_search(root, args):
     conn = db(root)
+    semantic = vec_search(conn, args.query, args.k)
     hits = search_rows(conn, args.query, args.k, "summary")
     if len(hits) < args.k:
         full = search_rows(conn, args.query, args.k, "full")
         seen = {h["path"] for h in hits}
         hits += [h for h in full if h["path"] not in seen][: args.k - len(hits)]
+    hits = merge_hits(semantic, hits, args.k)
     if not hits:
         print("(无结果)")
         return
     for i, h in enumerate(hits, 1):
-        print(f"[{i}] {h['date']}  {h['title']}  tags: {h['tags']}")
+        src = f"  [{h.get('src', '关键词')}]" if h.get("src") else ""
+        print(f"[{i}] {h['date']}  {h['title']}  tags: {h['tags']}{src}")
         print(f"    摘要: {h['summary'] or '(无)'}")
         print(f"    文件: {h['path']}")
 
@@ -238,15 +311,18 @@ def cmd_inject(root, args):
         out += [f"- {e}" for e in mem_entries(c)]
         out.append("</memory>")
     conn = db(root)
+    semantic = vec_search(conn, args.query, args.k)
     hits = search_rows(conn, args.query, args.k, "summary")
     if len(hits) < args.k:
         full = search_rows(conn, args.query, args.k, "full")
         seen = {h["path"] for h in hits}
         hits += [h for h in full if h["path"] not in seen][: args.k - len(hits)]
+    hits = merge_hits(semantic, hits, args.k)
     if hits:
         out.append(f"<memory 检索 Top-{len(hits)} 关键词:{args.query}>")
         for h in hits:
-            out.append(f"- [{h['date']}] {h['title']}: {h['summary'] or '(无摘要,见正文)'}")
+            tag = f"[{h['src']}] " if h.get("src") else ""
+            out.append(f"- {tag}[{h['date']}] {h['title']}: {h['summary'] or '(无摘要,见正文)'}")
         out.append("</memory>")
     print("\n".join(out) if out else "(无结果)")
 
@@ -298,6 +374,7 @@ def cmd_index(root):
     conn = db(root)
     conn.execute("DELETE FROM mem")
     conn.execute("DELETE FROM mem_fts")
+    conn.execute("DELETE FROM mem_vec")
     conn.commit()
     months = {}
     for f in sorted((root / "notes").rglob("*.md")):
@@ -317,6 +394,17 @@ def cmd_index(root):
                       f"- 摘要: {x.get('summary','')}", f"- tags: {x.get('tags','')}", ""]
         atomic_write(root / "notes" / y / m / "_index.md", "\n".join(lines))
     print(f"ok: 已索引 {sum(len(v) for v in months.values())} 条, 生成 {len(months)} 个月度索引")
+
+def cmd_pending(root, args):
+    d = root / "notes" / "pending"
+    if not d.exists():
+        print("(无待整理缓冲——插件自动捕获会把每轮用户消息原话存这里)")
+        return
+    for f in sorted(d.glob("*.md")):
+        txt = f.read_text(encoding="utf-8").strip()
+        print(f"=== {f.name} ({len(txt)} 字符) ===")
+        print(txt or "(空)")
+        print()
 
 def cmd_rollup(root, args):
     if args.month:
@@ -368,6 +456,7 @@ def main():
     p.add_argument("action", choices=["show", "add", "rm", "clear"])
     p.add_argument("arg", nargs="?")
     sub.add_parser("index")
+    sub.add_parser("pending")
     p = sub.add_parser("rollup")
     p.add_argument("month", nargs="?", default="")
     args = ap.parse_args()
@@ -398,6 +487,7 @@ def main():
             write_memfile(root, "")
             print("ok: MEMORY.md 已清空")
     elif c == "index": cmd_index(root)
+    elif c == "pending": cmd_pending(root, args)
     elif c == "rollup": cmd_rollup(root, args)
 
 if __name__ == "__main__":
