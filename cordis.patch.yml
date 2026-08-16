@@ -1,0 +1,5 @@
+# dsh-memory — 全局记忆插件。
+# 注册 memory_add/search/inject/remove/list/mem 六个工具，内部调用随包携带的 mem.py。
+- insert:
+    - id: memory
+      name: dsh-memory
