@@ -1,0 +1,13 @@
+# 真实记忆库（隐私红线：绝不提交）
+memories/
+
+# 会话解压/临时文件
+_*.cjs
+_*.json
+_*.py
+_*.txt
+*.jsonl
+
+# Python
+__pycache__/
+*.pyc
