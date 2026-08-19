@@ -30,8 +30,8 @@ from pathlib import Path
 MEM_LIMIT = 2200          # MEMORY.md 字符上限(约800 token)
 SEP = "\n§\n"             # MEMORY.md 条目分隔符(同 Hermes)
 TRASH_DIR = ".trash"
-EMBED_MODEL = "BAAI/bge-small-zh-v1.5"   # 中文语义检索模型（384 维）
-VEC_DIM = 512   # bge-small-zh-v1.5 实际维度
+EMBED_MODEL = "BAAI/bge-small-zh-v1.5"   # 中文语义检索模型（512 维）
+VEC_DIM = 512                             # 与 EMBED_MODEL 输出维度一致，勿改
 _embedder = None
 
 def embedder():
@@ -46,7 +46,7 @@ def embedder():
     return _embedder or None
 
 def to_vec(text):
-    """文本 -> 384 维 float32 向量(BLOB)。无模型时返回 None。"""
+    """文本 -> VEC_DIM(512) 维 float32 向量(BLOB)。无模型时返回 None。"""
     e = embedder()
     if e is None or not text:
         return None
@@ -217,13 +217,17 @@ def cmd_add(root, args):
     return path
 
 def search_rows(conn, query: str, k: int, phase: str):
-    """phase='summary' 只搜标题+摘要; 'full' 搜全部; 短查询(<3字符)退回 LIKE。"""
+    """phase='summary' 只搜标题+摘要; 'full' 搜全部; 短查询(<3字符)退回 LIKE。
+
+    注意: mem_fts 无 tags 列, 必须 JOIN mem 表补全字段, 否则 SELECT 抛
+    "no such column: tags" 被吞后静默退化成 LIKE 只搜 title(历史 bug)。
+    """
     if len(query) >= 3:
+        sql = ("SELECT m.path, m.date, m.title, m.tags, m.summary FROM mem_fts f "
+               "JOIN mem m ON m.path = f.path WHERE mem_fts MATCH ? ORDER BY rank LIMIT ?")
         if phase == "summary":
-            sql = "SELECT path, date, title, tags, summary FROM mem_fts WHERE mem_fts MATCH ? ORDER BY rank LIMIT ?"
             q = '{title summary} : "' + query + '"'
         else:
-            sql = "SELECT path, date, title, tags, summary FROM mem_fts WHERE mem_fts MATCH ? ORDER BY rank LIMIT ?"
             q = '"' + query + '"'
         try:
             return [dict(zip(("path", "date", "title", "tags", "summary"), r))
@@ -445,7 +449,7 @@ def main():
     p.add_argument("month", nargs="?", default="")
     p = sub.add_parser("inject")
     p.add_argument("query")
-    p.add_argument("-k", type=int, default=5)
+    p.add_argument("-k", type=int, default=3)   # token 纪律: 注入默认 Top-3
     p = sub.add_parser("rm")
     p.add_argument("path")
     p.add_argument("--hard", action="store_true")

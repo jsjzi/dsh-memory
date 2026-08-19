@@ -1,7 +1,10 @@
 # dsh-memory — 全局记忆插件
 
 把对话提炼为结构化记忆（结论/决定/待办 + 标签），SQLite FTS5 中文全文检索，Top-K 注入上下文。
-基于 [mem.py](../..) 双层记忆系统，插件自包含（mem.py 随包分发，零第三方依赖）。
+基于 [mem.py](../..) 双层记忆系统，插件自包含（mem.py 随包分发，纯 Python 标准库、零 pip 依赖）。
+
+> 可选增强：语义向量检索（跨词序/同义词召回）需额外 `pip install fastembed`，
+> 未安装时自动退回关键词检索，功能不受影响。
 
 ## 安装
 
@@ -50,7 +53,14 @@ memories/
 
 ## Token 纪律
 
-存储与检索 0 token；注入有上限（Top-K ≤3，约 2k token）。记忆系统是检索系统，不是上下文转储系统。
+存储与检索 0 token；注入有上限（`memory_inject` 默认 Top-K = 3，约 2k token，可显式传 `k` 调整）。
+记忆系统是检索系统，不是上下文转储系统。
+
+## 测试
+
+```bash
+python tests/test_mem.py -v   # 纯标准库 unittest，覆盖 add/search/inject/rm/restore/mem/rollup/index
+```
 
 ## License
 
