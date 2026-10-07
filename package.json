@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "全局记忆插件：把对话提炼为结构化记忆（结论/决定/待办），SQLite FTS5 中文检索，Top-K 注入。基于 mem.py 双层记忆系统。",
   "type": "module",
   "main": "lib/index.js",

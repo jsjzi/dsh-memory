@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { register } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 const TOOLS_REL = join("resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-tools");
@@ -81,11 +81,24 @@ try {
   const found = await search.execute({ query: "宿主冒烟测试" }, {});
   if (!String(found.output).includes("宿主冒烟测试")) fail(`memory_search 没检索到刚写入的记忆: ${found.output}`);
 
+  // 自动捕获护栏：真实用户消息要落进 pending，DSH 的运行时上下文注入要挡掉
+  const capture = listeners.find((entry) => entry.name === "session/event").handler;
+  capture({}, { type: "user/message", data: { content: [{ type: "text",
+    text: "Time sampled while preparing turn 3, step 1: 2026-10-07T15:45:24+08:00[Asia/Shanghai]\nBrowser time zone for this request: Asia/Shanghai." }] } });
+  capture({}, { type: "user/message", data: { content: [{ type: "text", text: "记住我的仓库 https://github.com/jsjzi" }] } });
+  await new Promise((resolve) => setTimeout(resolve, 400));   // appendPending 是 fire-and-forget
+  const pendingDir = join(home, "notes", "pending");
+  const pendingFiles = await readdir(pendingDir);
+  const pending = await readFile(join(pendingDir, pendingFiles[0]), "utf8");
+  if (!pending.includes("github.com/jsjzi")) fail("自动捕获漏掉了真实用户消息");
+  if (pending.includes("Time sampled")) fail("DSH 运行时上下文注入被写进了 pending 缓冲");
+
   if (process.exitCode !== 1) {
     console.log(`PASS: DSH 运行时 ${process.version} 上加载正常`);
     console.log(`      工具: ${names.join(", ")}`);
     console.log(`      memory_add → ${String(added.output).trim()}`);
     console.log(`      memory_search → ${String(found.output).trim().split("\n")[0]}`);
+    console.log(`      自动捕获 → ${JSON.stringify(pending.trim())}`);
     console.log(`      dsh-tools: ${toolsDir}`);
   }
 } finally {

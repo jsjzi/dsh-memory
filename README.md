@@ -169,6 +169,13 @@ cmd /c "set ELECTRON_RUN_AS_NODE=1&& \"<DSH 安装目录>\DeepSeek Harness.exe\"
 
 ## 变更
 
+### 0.1.2
+
+- 自动捕获护栏补漏：DSH 每轮注入的运行时上下文（`Time sampled while preparing…`、
+  `Browser time zone for this request…`、`Elapsed since the preceding…`）实测会作为
+  `user/message` 事件到达，原前缀表没覆盖，导致系统噪声被写进 `notes/pending/`；
+  现已拦截，并在宿主冒烟测试里加了断言（真实消息必须落、系统注入必须挡）。
+
 ### 0.1.1
 
 - 兼容 DSH `0.2.x`：补 `peerDependencies` 范围 `>=0.1.0-rc.6 <0.3.0-0`（含 prerelease 语义）、
