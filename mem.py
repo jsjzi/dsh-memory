@@ -33,16 +33,33 @@ TRASH_DIR = ".trash"
 EMBED_MODEL = "BAAI/bge-small-zh-v1.5"   # 中文语义检索模型（512 维）
 VEC_DIM = 512                             # 与 EMBED_MODEL 输出维度一致，勿改
 _embedder = None
+_embedder_failed = False
+SEMANTIC_ENV = "MEMORY_SEMANTIC"
+
+def semantic_enabled() -> bool:
+    """语义检索是否启用：环境变量 MEMORY_SEMANTIC=1/true/yes/on。默认关闭。"""
+    return os.environ.get(SEMANTIC_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 def embedder():
-    """懒加载本地 embedding 模型。未安装 fastembed 时返回 None（自动退回关键词检索）。"""
-    global _embedder
-    if _embedder is None:
-        try:
-            from fastembed import TextEmbedding
-            _embedder = TextEmbedding(model_name=EMBED_MODEL)
-        except Exception:
-            _embedder = False
+    """懒加载本地 embedding 模型；未启用或加载失败都返回 None（退回关键词检索）。
+
+    为什么默认关闭：加载 fastembed 需要联网下载/校验模型，首次调用可能卡住几十秒，
+    而本脚本是被插件按次调用的——一次搜索/写入不能因此被拖死（实测：系统里装了
+    fastembed 但模型未缓存时，add/search 会一直重试网络直到调用方超时）。
+    要用语义检索：先 `pip install fastembed` 并在联网环境预热一次把模型下好，
+    再设 MEMORY_SEMANTIC=1（插件侧可写 config.semantic: true）。
+    """
+    global _embedder, _embedder_failed
+    if _embedder is not None:
+        return _embedder or None
+    if _embedder_failed or not semantic_enabled():
+        return None
+    try:
+        from fastembed import TextEmbedding
+        _embedder = TextEmbedding(model_name=EMBED_MODEL)
+    except Exception:
+        _embedder_failed = True
+        _embedder = False
     return _embedder or None
 
 def to_vec(text):
@@ -114,6 +131,7 @@ def slugify(title: str) -> str:
 # ---------- 索引 ----------
 
 def db(root: Path):
+    root.mkdir(parents=True, exist_ok=True)   # 首次使用（还没 add 过）时库目录可能不存在
     conn = sqlite3.connect(root / "index.sqlite")
     conn.execute("""CREATE TABLE IF NOT EXISTS mem(
         path TEXT PRIMARY KEY, date TEXT, title TEXT, tags TEXT, summary TEXT, body TEXT)""")
@@ -196,8 +214,13 @@ def cmd_add(root, args):
     fname = f"{d}-{slugify(args.title)}.md"
     path = root / "notes" / y / m / fname
     body = (args.content or "").strip()
-    if not body and not sys.stdin.isatty():
-        body = sys.stdin.read().strip()
+    # 只有调用方「完全没给 --content」时才读 stdin（CLI 管道用法）。显式传了
+    # --content（哪怕空串）就绝不碰 stdin，否则子进程管道里会一直阻塞。
+    if args.content is None and sys.stdin is not None and not sys.stdin.isatty():
+        try:
+            body = sys.stdin.read().strip()
+        except Exception:
+            body = ""
     if args.append and path.exists():
         meta, old = parse_frontmatter(path.read_text(encoding="utf-8"))
         meta["date"] = date
@@ -465,8 +488,14 @@ def main():
     p.add_argument("month", nargs="?", default="")
     args = ap.parse_args()
 
-    if sys.stdout.encoding.lower() != "utf-8":
-        sys.stdout.reconfigure(encoding="utf-8")
+    # Windows 中文环境下 stdout/stderr 默认是 GBK：走管道时中文会变成乱码，
+    # 或让按 UTF-8 解码的调用方（插件、测试）直接失败。这里统一强制 UTF-8。
+    for stream in (sys.stdout, sys.stderr):
+        if (getattr(stream, "encoding", "") or "").lower().replace("-", "") != "utf8":
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
 
     root = home()
     c = args.cmd

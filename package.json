@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "全局记忆插件：把对话提炼为结构化记忆（结论/决定/待办），SQLite FTS5 中文检索，Top-K 注入。基于 mem.py 双层记忆系统。",
   "type": "module",
   "main": "lib/index.js",
@@ -14,13 +14,34 @@
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsjzi/dsh-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jsjzi/dsh-memory/issues"
+  },
+  "homepage": "https://github.com/jsjzi/dsh-memory#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
+  "scripts": {
+    "test": "python tests/test_mem.py -v"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
   "keywords": [
     "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
     "memory",
     "记忆",
     "plugin"

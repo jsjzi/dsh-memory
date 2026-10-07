@@ -19,7 +19,10 @@ PY = sys.executable
 
 
 def run_mem(home: Path, *args: str) -> str:
-    env = dict(os.environ, MEMORY_HOME=str(home))
+    # 强制子进程用 UTF-8：Windows 中文环境下 Python 默认 GBK，测试按 UTF-8 解码
+    # stderr 会直接抛 UnicodeDecodeError（也就是「中文字符断言」失败的根因）。
+    env = dict(os.environ, MEMORY_HOME=str(home), PYTHONUTF8="1",
+               PYTHONIOENCODING="utf-8")
     r = subprocess.run([PY, str(MEM_PY), *args], capture_output=True,
                        text=True, encoding="utf-8", env=env, timeout=60)
     if r.returncode != 0:
@@ -207,6 +210,30 @@ class TestPending(MemTestCase):
     def test_pending_empty_message(self):
         out = run_mem(self.home, "pending")
         self.assertIn("无待整理缓冲", out)
+
+
+class TestFirstUse(unittest.TestCase):
+    """全新机器（库目录还不存在、也没跑过 init）时不许崩。
+
+    回归用例：db() 以前不建目录，首次直接 search 会抛
+    sqlite3.OperationalError: unable to open database file。
+    """
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp(prefix="memfresh_"))
+        shutil.rmtree(self.home, ignore_errors=True)   # 故意让库目录不存在
+        self.addCleanup(lambda: shutil.rmtree(self.home, ignore_errors=True))
+
+    def test_search_before_init(self):
+        self.assertIn("无结果", run_mem(self.home, "search", "任意关键词"))
+        self.assertTrue((self.home / "index.sqlite").is_file())
+
+    def test_mem_add_before_init(self):
+        self.assertIn("已写入", run_mem(self.home, "mem", "add", "新机器上的第一条常驻记忆"))
+
+    def test_add_before_init(self):
+        run_mem(self.home, "add", "全新库里的第一条", "-s", "结论:可用")
+        self.assertIn("全新库里的第一条", run_mem(self.home, "search", "全新库"))
 
 
 if __name__ == "__main__":

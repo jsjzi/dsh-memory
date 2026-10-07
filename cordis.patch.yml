@@ -3,3 +3,11 @@
 - insert:
     - id: memory
       name: dsh-memory
+      # 可选配置（不写就是默认值）：
+      # config:
+      #   memoryHome: ""    # 记忆库根，默认 $DSH_HOME/memories
+      #   memPyPath: ""     # mem.py 路径，默认随包
+      #   pythonPath: ""    # Python 解释器，默认按序探测：
+      #                     #   pythonPath → MEMORY_PYTHON → PYTHON → python / python3 / py -3
+      #   semantic: false   # true = 打开语义向量检索。需先 pip install fastembed 并预热下载好模型，
+      #                     #        否则每次调用都会联网，可能把工具调用拖到超时
